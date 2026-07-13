@@ -1,6 +1,6 @@
 from modelos import carregar_modelos
 from interface import separador, menu_comparativo
-from pipelines import executar_analise_atual, executar_backtesting
+from pipelines import executar_analise_atual, executar_backtesting, executar_backtesting_lote
 
 
 def main():
@@ -19,6 +19,7 @@ def main():
         print("  [1] Análise Atual (Recomendação baseada em notícias de hoje)")
         print("  [2] Backtesting (Testar o modelo com dados do passado)")
         print("  [3] Alterar modo comparativo (recarrega modelos)")
+        print("  [4] Experimento em lote (backtesting automatizado — todos os ativos)")
         print("  [0] Sair")
         separador()
 
@@ -33,6 +34,9 @@ def main():
         elif opcao == "3":
             usar_comparativo = menu_comparativo()
             modelos = carregar_modelos(usar_comparativo)
+
+        elif opcao == "4":
+            executar_backtesting_lote(modelos, usar_comparativo)
 
         elif opcao == "0":
             print("\n  Encerrando. Até logo!\n")
