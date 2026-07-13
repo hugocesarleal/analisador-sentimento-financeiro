@@ -37,6 +37,7 @@ def buscar_variacao_ativo(ticker: str, data_inicio: str, data_fim: str) -> dict 
         print(f"  [ERRO yfinance] {e}")
         return None
 
+#T
 
 def avaliar_backtesting(recomendacao: str, variacao_pct: float) -> dict:
     acertou = False
