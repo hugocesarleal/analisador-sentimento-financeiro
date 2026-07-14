@@ -1,6 +1,9 @@
 from deep_translator import GoogleTranslator
 from config import LIMIAR_RECOMENDACAO
 from cache_traducao import obter_traducao_cacheada, salvar_traducao_no_cache
+from logging_config import obter_logger
+
+logger = obter_logger(__name__)
 
 
 def traduzir_para_ingles(texto: str) -> str:
@@ -23,7 +26,8 @@ def traduzir_para_ingles(texto: str) -> str:
 
     try:
         traducao = GoogleTranslator(source="pt", target="en").translate(texto)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Falha ao traduzir texto (usando original, sem tradução): {texto!r} — {e}")
         traducao = texto
 
     salvar_traducao_no_cache(texto, traducao)

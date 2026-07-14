@@ -1,0 +1,2 @@
+﻿run_id,tipo_execucao,timestamp,usar_comparativo,modelo_finbert,modelo_pysentimiento,quantidade_noticias,limiar_recomendacao,versao_transformers,versao_torch,versao_pysentimiento,versao_deep_translator,versao_yfinance,versao_feedparser,qtd_ativos,meses_historico,granularidade_dias,pausa_entre_requisicoes,data_inicio_total,data_fim_total,total_janelas_por_ativo
+20260713_195127_283f4377,backtesting_lote,2026-07-13 19:51:27,True,ProsusAI/finbert,pysentimiento (lang=pt),10,0.15,5.5.4,2.11.0,0.7.3,1.11.4,1.2.2,6.0.12,8,12,7,1.5,2025-07-15,2026-07-10,50

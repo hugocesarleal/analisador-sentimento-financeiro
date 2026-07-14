@@ -3,7 +3,15 @@ from datetime import datetime, timedelta
 
 from tqdm import tqdm
 
-from config import ATIVOS, QUANTIDADE_NOTICIAS, LOTE_MESES_HISTORICO, LOTE_GRANULARIDADE_DIAS, LOTE_PAUSA_SEGUNDOS
+from config import (
+    ATIVOS,
+    QUANTIDADE_NOTICIAS,
+    LOTE_MESES_HISTORICO,
+    LOTE_GRANULARIDADE_DIAS,
+    LOTE_PAUSA_SEGUNDOS,
+    VALIDAR_PERIODO_NOTICIAS_HISTORICAS,
+    MARGEM_TOLERANCIA_DIAS_NOTICIAS
+)
 from noticias import buscar_noticias, buscar_noticias_historicas
 from sentimentos import (
     traduzir_para_ingles,
@@ -22,6 +30,7 @@ from mercado import (
     avaliar_backtesting
 )
 from base_dados import salvar_base_noticias, salvar_base_backtesting
+from experimento import gerar_run_id, registrar_execucao
 from interface import (
     menu_ativo,
     menu_intervalo,
@@ -35,16 +44,33 @@ from interface import (
 
 def executar_analise_atual(modelos: dict, usar_comparativo: bool):
     """Fluxo 1: análise de notícias recentes."""
+    run_id = gerar_run_id()
+
     ativo = menu_ativo()
     intervalo = menu_intervalo()
 
-    print(f"\n🔍 Buscando notícias recentes sobre '{ativo['busca']}' (intervalo: {intervalo})...")
+    registrar_execucao(
+        run_id,
+        tipo_execucao="analise_atual",
+        usar_comparativo=usar_comparativo,
+        parametros_extra={
+            "ativo_nome": ativo["nome"],
+            "ticker": ativo["ticker"],
+            "intervalo": intervalo
+        }
+    )
 
-    noticias = buscar_noticias(
+    print(f"\n🔖 Run ID desta execução: {run_id}")
+    print(f"🔍 Buscando notícias recentes sobre '{ativo['busca']}' (intervalo: {intervalo})...")
+
+    noticias, descartadas_duplicadas = buscar_noticias(
         ativo["busca"],
         intervalo,
         QUANTIDADE_NOTICIAS
     )
+
+    if descartadas_duplicadas > 0:
+        print(f"   ℹ️  {descartadas_duplicadas} notícia(s) duplicada(s) descartada(s).")
 
     if not noticias:
         print("⚠️  Nenhuma notícia recente encontrada.")
@@ -88,6 +114,7 @@ def executar_analise_atual(modelos: dict, usar_comparativo: bool):
             "titulo_noticia": titulo_pt,
             "fonte": noticia["fonte"],
             "data_publicacao": noticia["data"],
+            "data_publicacao_verificada": noticia.get("data_verificada"),
             "titulo_traduzido_en": titulo_en,
             "sentimento_finbert": res_fb["label"],
             "confianca_finbert": res_fb["score"],
@@ -136,7 +163,7 @@ def executar_analise_atual(modelos: dict, usar_comparativo: bool):
         usar_comparativo
     )
 
-    salvar_base_noticias(linhas_base_noticias)
+    salvar_base_noticias(linhas_base_noticias, run_id=run_id)
 
 
 def _processar_periodo_backtesting(
@@ -147,8 +174,10 @@ def _processar_periodo_backtesting(
     data_fim_noticias: str,
     data_ini_preco: str,
     data_fim_preco: str,
+    run_id: str,
     verbose: bool = True,
-    df_precos_precarregado=None
+    df_precos_precarregado=None,
+    titulos_ja_processados: set | None = None
 ):
     """Núcleo do backtesting para UM ativo em UMA janela de tempo.
 
@@ -161,6 +190,11 @@ def _processar_periodo_backtesting(
     `buscar_historico_precos`), a variação de preço é recortada localmente
     em vez de disparar uma nova chamada ao yfinance — essencial no modo em
     lote, onde a mesma ação é reaproveitada em dezenas de janelas semanais.
+
+    Se `titulos_ja_processados` for informado (um `set()` compartilhado entre
+    todas as janelas do MESMO ativo dentro de um lote), notícias já vistas em
+    uma janela anterior desse ativo são descartadas como duplicadas — evita
+    que a mesma notícia "vaze" pra semana seguinte por imprecisão do RSS.
     """
     if verbose:
         print(
@@ -168,11 +202,15 @@ def _processar_periodo_backtesting(
             f"entre {data_ini_noticias} e {data_fim_noticias}..."
         )
 
-    noticias = buscar_noticias_historicas(
+    noticias, descartadas_fora_periodo, descartadas_duplicadas = buscar_noticias_historicas(
         ativo["busca"],
         data_ini_noticias,
         data_fim_noticias,
-        QUANTIDADE_NOTICIAS
+        QUANTIDADE_NOTICIAS,
+        validar_periodo=VALIDAR_PERIODO_NOTICIAS_HISTORICAS,
+        margem_dias=MARGEM_TOLERANCIA_DIAS_NOTICIAS,
+        verbose=verbose,
+        titulos_ja_processados=titulos_ja_processados
     )
 
     if not noticias:
@@ -220,6 +258,7 @@ def _processar_periodo_backtesting(
             "titulo_noticia": titulo_pt,
             "fonte": noticia["fonte"],
             "data_publicacao": noticia["data"],
+            "data_publicacao_verificada": noticia.get("data_verificada"),
             "titulo_traduzido_en": titulo_en,
             "sentimento_finbert": res_fb["label"],
             "confianca_finbert": res_fb["score"],
@@ -264,7 +303,7 @@ def _processar_periodo_backtesting(
             ativo["nome"], len(noticias), score_fb, rec_fb, score_py, rec_py, usar_comparativo
         )
 
-    salvar_base_noticias(linhas_base_noticias)
+    salvar_base_noticias(linhas_base_noticias, run_id=run_id)
 
     if verbose:
         print(f"\n📊 Validando recomendação com preços entre {data_ini_preco} e {data_fim_preco}...")
@@ -313,10 +352,14 @@ def _processar_periodo_backtesting(
         "ganho_pct_pysentimiento": bt_py["ganho_pct"] if bt_py else None
     }
 
-    salvar_base_backtesting(linha_backtesting)
+    salvar_base_backtesting(linha_backtesting, run_id=run_id)
 
     return {
+        "run_id": run_id,
         "qtd_noticias": len(noticias),
+        "noticias_descartadas_fora_periodo": descartadas_fora_periodo,
+        "noticias_descartadas_duplicadas": descartadas_duplicadas,
+        "taxa_cobertura_noticias": len(noticias) / QUANTIDADE_NOTICIAS,
         "score_finbert": score_fb,
         "recomendacao_finbert": rec_fb,
         "score_pysentimiento": score_py,
@@ -330,6 +373,8 @@ def _processar_periodo_backtesting(
 def executar_backtesting(modelos: dict, usar_comparativo: bool):
     """Fluxo 2: análise histórica com validação por preço futuro (modo interativo,
     com seleção manual de ativo e datas via calendário)."""
+    run_id = gerar_run_id()
+
     ativo = menu_ativo()
 
     separador()
@@ -369,8 +414,23 @@ def executar_backtesting(modelos: dict, usar_comparativo: bool):
 
     print(f"     Data Fim da avaliação: {data_fim_preco}")
 
+    registrar_execucao(
+        run_id,
+        tipo_execucao="backtesting_manual",
+        usar_comparativo=usar_comparativo,
+        parametros_extra={
+            "ativo_nome": ativo["nome"],
+            "ticker": ativo["ticker"],
+            "data_inicio_noticias": data_ini_noticias,
+            "data_fim_noticias": data_fim_noticias,
+            "data_inicio_preco": data_ini_preco,
+            "data_fim_preco": data_fim_preco,
+        }
+    )
+
+    print(f"\n🔖 Run ID desta execução: {run_id}")
     print(
-        f"\n🔍 Buscando notícias de '{ativo['busca']}' "
+        f"🔍 Buscando notícias de '{ativo['busca']}' "
         f"entre {data_ini_noticias} e {data_fim_noticias}..."
     )
 
@@ -382,6 +442,7 @@ def executar_backtesting(modelos: dict, usar_comparativo: bool):
         data_fim_noticias,
         data_ini_preco,
         data_fim_preco,
+        run_id=run_id,
         verbose=True
     )
 
@@ -428,7 +489,7 @@ def executar_backtesting_lote(
     granularidade_dias: int = LOTE_GRANULARIDADE_DIAS,
     pausa_entre_requisicoes: float = LOTE_PAUSA_SEGUNDOS
 ):
-    """Fluxo 4 (NOVO): experimento em lote, totalmente automatizado.
+    """Fluxo 4: experimento em lote, totalmente automatizado.
 
     Roda o backtesting para vários ativos, em várias janelas semanais
     consecutivas cobrindo `meses_historico` meses, sem NENHUMA intervenção
@@ -440,14 +501,19 @@ def executar_backtesting_lote(
     UMA ÚNICA VEZ (não uma vez por janela semanal) e reaproveitado
     localmente — isso evita ~50 chamadas ao yfinance por ativo.
 
-    Limitações conhecidas desta primeira versão (a resolver nos próximos
-    passos da Fase 1):
-    - os resultados ainda não carregam um identificador de execução (run_id)
-      para diferenciar lotes distintos na mesma tabela CSV;
-    - a tradução (Google Translate) ainda não tem cache, então rodar este
-      lote duas vezes pode gerar pequenas variações e é relativamente lento
-      (até QUANTIDADE_NOTICIAS × nº de janelas traduções por ativo).
+    Todas as janelas de todos os ativos deste lote compartilham o MESMO
+    run_id (o lote inteiro é uma única "execução" do ponto de vista de
+    reprodutibilidade — todas rodaram com a mesma config e mesmas versões
+    de biblioteca). Isso permite depois filtrar no CSV `df[df.run_id == X]`
+    pra isolar exatamente os resultados gerados por este lote.
+
+    Limitação conhecida ainda em aberto (próximo passo da Fase 1):
+    a tradução (Google Translate) ainda não tem cache, então rodar este
+    lote duas vezes pode gerar pequenas variações e é relativamente lento
+    (até QUANTIDADE_NOTICIAS × nº de janelas traduções por ativo).
     """
+    run_id = gerar_run_id()
+
     if ativos is None:
         ativos = [v for v in ATIVOS.values() if v["ticker"] is not None]
 
@@ -458,9 +524,25 @@ def executar_backtesting_lote(
 
     janelas = gerar_janelas_semanais(data_inicio_total, data_fim_total, granularidade_dias)
 
+    registrar_execucao(
+        run_id,
+        tipo_execucao="backtesting_lote",
+        usar_comparativo=usar_comparativo,
+        parametros_extra={
+            "qtd_ativos": len(ativos),
+            "meses_historico": meses_historico,
+            "granularidade_dias": granularidade_dias,
+            "pausa_entre_requisicoes": pausa_entre_requisicoes,
+            "data_inicio_total": data_inicio_total.strftime("%Y-%m-%d"),
+            "data_fim_total": data_fim_total.strftime("%Y-%m-%d"),
+            "total_janelas_por_ativo": len(janelas),
+        }
+    )
+
     separador("═")
     print("  EXPERIMENTO EM LOTE — BACKTESTING AUTOMATIZADO")
     separador("═")
+    print(f"  Run ID              : {run_id}")
     print(f"  Período total       : {data_inicio_total.strftime('%Y-%m-%d')} → {data_fim_total.strftime('%Y-%m-%d')}")
     print(f"  Ativos              : {len(ativos)}")
     print(f"  Janelas por ativo   : {len(janelas)}")
@@ -482,6 +564,13 @@ def executar_backtesting_lote(
             print(f"   ⚠️  Sem dados de preço para {ativo['ticker']}, pulando ativo.")
             continue
 
+        # Um set por ativo (não global entre ativos): o mesmo título pode
+        # legitimamente aparecer nas buscas de dois ativos diferentes (ex:
+        # uma notícia que menciona Petrobras E Bradesco), então não deve ser
+        # descartado nesse caso — só entre janelas semanais DESTE ativo.
+        titulos_processados_ativo = set()
+        resumo_execucoes_ativo = []
+
         for janela in tqdm(janelas, desc=f"   {ativo['ticker']}"):
             try:
                 resultado = _processar_periodo_backtesting(
@@ -492,25 +581,40 @@ def executar_backtesting_lote(
                     janela["data_fim_noticias"],
                     janela["data_ini_preco"],
                     janela["data_fim_preco"],
+                    run_id=run_id,
                     verbose=False,
-                    df_precos_precarregado=df_precos
+                    df_precos_precarregado=df_precos,
+                    titulos_ja_processados=titulos_processados_ativo
                 )
 
                 if resultado:
-                    resumo_execucoes.append({
+                    linha_resumo = {
                         "ativo": ativo["nome"],
                         "ticker": ativo["ticker"],
                         **janela,
                         **resultado
-                    })
+                    }
+                    resumo_execucoes.append(linha_resumo)
+                    resumo_execucoes_ativo.append(linha_resumo)
 
             except Exception as e:
                 print(f"   ⚠️  Falhou janela {janela['data_ini_noticias']}–{janela['data_fim_noticias']}: {e}")
 
             time.sleep(pausa_entre_requisicoes)
 
+        if resumo_execucoes_ativo:
+            cobertura_media_ativo = sum(r["taxa_cobertura_noticias"] for r in resumo_execucoes_ativo) / len(resumo_execucoes_ativo)
+            qtd_media_ativo = sum(r["qtd_noticias"] for r in resumo_execucoes_ativo) / len(resumo_execucoes_ativo)
+            duplicadas_ativo = sum(r.get("noticias_descartadas_duplicadas", 0) for r in resumo_execucoes_ativo)
+            print(
+                f"   📋 Cobertura média de notícias: {100 * cobertura_media_ativo:.1f}% "
+                f"(méd. {qtd_media_ativo:.1f}/{QUANTIDADE_NOTICIAS} por semana"
+                + (f", {duplicadas_ativo} duplicada(s) descartada(s) no total" if duplicadas_ativo > 0 else "")
+                + ")"
+            )
+
     total_esperado = len(ativos) * len(janelas)
-    print(f"\n✅ Lote finalizado: {len(resumo_execucoes)}/{total_esperado} execuções concluídas com sucesso.")
+    print(f"\n✅ Lote finalizado ({run_id}): {len(resumo_execucoes)}/{total_esperado} execuções concluídas com sucesso.")
 
     if resumo_execucoes:
         acertos_fb = sum(1 for r in resumo_execucoes if r["acerto_finbert"])
@@ -523,6 +627,21 @@ def executar_backtesting_lote(
                 acertos_py = sum(1 for r in validos_py if r["acerto_pysentimiento"])
                 print(f"📈 Taxa de acerto (PySentimiento) neste lote: {acertos_py}/{len(validos_py)} "
                       f"= {100 * acertos_py / len(validos_py):.1f}%")
+
+        total_descartadas_periodo = sum(r.get("noticias_descartadas_fora_periodo", 0) for r in resumo_execucoes)
+        total_descartadas_duplicadas = sum(r.get("noticias_descartadas_duplicadas", 0) for r in resumo_execucoes)
+        total_noticias_validas = sum(r.get("qtd_noticias", 0) for r in resumo_execucoes)
+        cobertura_media_geral = sum(r["taxa_cobertura_noticias"] for r in resumo_execucoes) / len(resumo_execucoes)
+
+        print(f"\n📋 Cobertura média de notícias (todo o lote): {100 * cobertura_media_geral:.1f}% "
+              f"da quantidade solicitada ({QUANTIDADE_NOTICIAS}/janela)")
+
+        if total_descartadas_periodo > 0:
+            print(f"📋 Notícias descartadas por estarem confirmadamente fora do período: "
+                  f"{total_descartadas_periodo}")
+
+        if total_descartadas_duplicadas > 0:
+            print(f"📋 Notícias descartadas por duplicidade: {total_descartadas_duplicadas}")
 
         print("\n⚠️  Nota: esta é uma taxa de acerto BRUTA, só pra ter um sinal rápido.")
         print("   Ainda não tem baseline de comparação nem significância estatística —")

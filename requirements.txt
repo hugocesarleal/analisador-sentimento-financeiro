@@ -59,6 +59,7 @@ pydantic==2.13.1
 pydantic_core==2.46.1
 Pygments==2.20.0
 pysentimiento==0.7.3
+pytest==8.3.4
 python-dateutil==2.9.0.post0
 pytz==2026.1.post1
 PyYAML==6.0.3
